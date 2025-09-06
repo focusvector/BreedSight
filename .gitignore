@@ -1,0 +1,42 @@
+# =========================================
+# Python / Virtual Environments
+# =========================================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+env/
+venv/
+ENV/
+.env
+pip-selfcheck.json
+*.egg-info/
+
+# =========================================
+# Project-specific ignores
+# =========================================
+# Ignore the datasets directory to keep the repository small.
+datasets/
+
+# Ignore large trained model files.
+*.pth
+
+# Ignore saved plots and class mappings
+*.png
+*.json
+
+# =========================================
+# IDE / Editor specific
+# =========================================
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# =========================================
+# OS specific
+# =========================================
+.DS_Store
+Thumbs.db
