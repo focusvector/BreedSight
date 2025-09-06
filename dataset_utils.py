@@ -267,3 +267,37 @@ class FusedDataset(Dataset):
 			image = self.transform(image) # Apply the transformations to the image.
 
 		return image, label # Return the processed image and its label.
+
+# =========================================
+# Test Block
+# =========================================
+if __name__ == '__main__':
+	"""
+	This block runs only when the script is executed directly.
+	It's used for testing the dataset preparation logic in isolation.
+	"""
+	print("\n--- Running dataset_utils.py in test mode ---")
+	
+	# Define the path to your datasets for testing.
+	# Make sure this path is correct.
+	test_dataset_root = r"D:\dev\sih\datasets"
+	
+	# Call the main function with some test parameters.
+	train_s, valid_s, class_map, _ = prepare_fused_samples(
+		dataset_dirs=[test_dataset_root],
+		selection_mode="TOP_N",
+		top_n=5 # Let's just look for the top 5 classes for a quick test.
+	)
+	
+	# Print a summary of the results.
+	print("\n--- Test Summary ---")
+	if train_s:
+		print(f"✅ Successfully found {len(train_s)} training samples.")
+		print(f"✅ Successfully found {len(valid_s)} validation samples.")
+		print(f"✅ Class map created for {len(class_map)} classes: {list(class_map.keys())}")
+	else:
+		print("❌ Test failed: No training samples were found.")
+		print("Please check the following:")
+		print(f"1. The test_dataset_root path is correct: '{test_dataset_root}'")
+		print("2. The directory contains subfolders for each class.")
+		print("3. The class subfolders contain image files.")
