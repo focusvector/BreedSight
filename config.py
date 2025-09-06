@@ -30,10 +30,10 @@ class Config:
     RANDOM_SEED = 42 # A fixed seed for all random number generators to ensure results are reproducible.
 
     # --- Performance Tuning ---
-    # LOADING_MODE: "PRELOAD_ALL", "ON_DEMAND", "CHUNKED"
-    # - PRELOAD_ALL: Loads entire dataset into RAM. Fastest, but uses most memory.
-    # - ON_DEMAND: Loads images from disk one by one. Slowest, but uses least memory.
-    # - CHUNKED: Loads dataset in large chunks. A balance between speed and memory.
+    # Set to False to load images from disk as needed (slower, but uses very little RAM).
+    # Set to True to attempt to load the entire dataset into RAM for faster training.
+    PRELOAD_DATASET_INTO_RAM = False
+    MEMORY_SAFETY_MARGIN = 0.75 # Use 75% of available RAM at most for pre-loading.
     LOADING_MODE = "CHUNKED" 
     CHUNK_SIZE = 8000 # Number of images to load into RAM at a time if using CHUNKED mode.
     MEMORY_SAFETY_MARGIN = 0.75 # Use 75% of available RAM at most for pre-loading.

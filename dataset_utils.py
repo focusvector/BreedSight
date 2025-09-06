@@ -268,6 +268,8 @@ class FusedDataset(Dataset):
 
 		return image, label # Return the processed image and its label.
 
+# The ChunkedFusedDataset class is removed.
+
 # =========================================
 # Test Block
 # =========================================

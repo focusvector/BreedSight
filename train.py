@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader, random_split # Imports DataLoader for b
 from torchvision import transforms # Imports torchvision's transforms module for common image transformations.
 
 from config import Config # Imports the Config class from our local config.py file.
-from dataset_utils import FusedDataset, prepare_fused_samples # Imports our custom dataset and preparation function.
+from dataset_utils import FusedDataset, prepare_fused_samples # Remove ChunkedFusedDataset import
 from engine import train_one_epoch, validate # Imports our core training and validation functions from engine.py.
 from model import build_model # Imports our model-building function from model.py.
 from plotting_utils import LivePlot
@@ -130,55 +130,28 @@ if __name__ == "__main__": # This block ensures the code runs only when the scri
     # =========================================
     # 4. Main Training Loop
     # =========================================
+    # --- Create DataLoaders ---
+    # The logic is now simplified to one path.
+    train_dataset = FusedDataset(final_train_samples, transform=train_transform, preload=cfg.PRELOAD_DATASET_INTO_RAM, safety_margin=cfg.MEMORY_SAFETY_MARGIN)
+    num_workers = 4 if not train_dataset.samples_are_preloaded else 0
+    train_loader = DataLoader(train_dataset, batch_size=cfg.BATCH_SIZE, shuffle=True, num_workers=num_workers, pin_memory=True)
+
+    # Validation loader is created once, as it's typically small enough to preload.
+    val_dataset = FusedDataset(final_valid_samples, transform=val_transform, preload=True, safety_margin=cfg.MEMORY_SAFETY_MARGIN)
+    # Use num_workers=0 for preloaded validation set for best performance.
+    val_loader = DataLoader(val_dataset, batch_size=cfg.BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
+
+
     for epoch in range(cfg.EPOCHS): # Start the main training loop for the specified number of epochs.
         start_time = time.time() # Record the start time of the epoch.
         
         # --- Training Phase ---
         model.train() # Set model to training mode for the whole epoch.
         
-        if cfg.LOADING_MODE == 'CHUNKED':
-            print(f"\n--- Epoch {epoch+1}/{cfg.EPOCHS} (Chunked Mode) ---")
-            random.shuffle(final_train_samples) # Shuffle all samples before chunking for better training.
-            
-            num_chunks = (len(final_train_samples) + cfg.CHUNK_SIZE - 1) // cfg.CHUNK_SIZE
-            epoch_train_loss = 0.0
-            
-            for i in range(num_chunks):
-                print(f"\n-- Training on Chunk {i+1}/{num_chunks} --")
-                chunk_samples = final_train_samples[i*cfg.CHUNK_SIZE : (i+1)*cfg.CHUNK_SIZE]
-                
-                # Preload this specific chunk into a FusedDataset instance.
-                chunk_dataset = FusedDataset(chunk_samples, transform=train_transform, preload=True, safety_margin=cfg.MEMORY_SAFETY_MARGIN)
-                
-                num_workers = 4 if not chunk_dataset.samples_are_preloaded else 0
-                if num_workers == 0 and chunk_dataset.samples_are_preloaded:
-                    print("Chunk is pre-loaded. Setting num_workers to 0 for this chunk.")
-                
-                chunk_loader = DataLoader(chunk_dataset, batch_size=cfg.BATCH_SIZE, shuffle=True, num_workers=num_workers, pin_memory=True)
-                
-                # The engine function works on any loader, which is great for this chunked approach.
-                chunk_loss = train_one_epoch(model, chunk_loader, optimizer, criterion, scaler, cfg.DEVICE)
-                epoch_train_loss += chunk_loss * len(chunk_dataset) # Accumulate weighted loss to average later.
-            
-            train_loss = epoch_train_loss / len(final_train_samples) # Calculate the average loss over the full epoch.
-            
-        else: # Handle PRELOAD_ALL and ON_DEMAND modes
-            print(f"\n--- Epoch {epoch+1}/{cfg.EPOCHS} ({cfg.LOADING_MODE} Mode) ---")
-            should_preload = (cfg.LOADING_MODE == 'PRELOAD_ALL')
-            train_dataset = FusedDataset(final_train_samples, transform=train_transform, preload=should_preload, safety_margin=cfg.MEMORY_SAFETY_MARGIN)
-            
-            num_workers = 4 if not train_dataset.samples_are_preloaded else 0
-            if num_workers == 0 and train_dataset.samples_are_preloaded:
-                print("Dataset is pre-loaded into RAM. Setting num_workers to 0 for optimal performance.")
-
-            train_loader = DataLoader(train_dataset, batch_size=cfg.BATCH_SIZE, shuffle=True, num_workers=num_workers, pin_memory=True)
-            train_loss = train_one_epoch(model, train_loader, optimizer, criterion, scaler, cfg.DEVICE)
+        # The training loop is now simple again. It calls the training function once per epoch.
+        train_loss = train_one_epoch(model, train_loader, optimizer, criterion, scaler, cfg.DEVICE)
 
         # --- Validation Phase ---
-        # Always attempt to preload the validation set as it's usually smaller.
-        val_dataset = FusedDataset(final_valid_samples, transform=val_transform, preload=True, safety_margin=cfg.MEMORY_SAFETY_MARGIN)
-        num_workers = 4 if not val_dataset.samples_are_preloaded else 0
-        val_loader = DataLoader(val_dataset, batch_size=cfg.BATCH_SIZE, shuffle=False, num_workers=num_workers, pin_memory=True)
         val_loss, val_acc = validate(model, val_loader, criterion, cfg.DEVICE)
         
         scheduler.step(val_loss) # Update the learning rate scheduler based on the validation loss.
