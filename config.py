@@ -3,7 +3,11 @@ import torch
 class Config:
     """A single class to hold all configuration parameters for the project."""
     # --- Dataset and Class Selection ---
-    DATASETS_ROOT_DIR = r"D:\dev\sih\datasets"
+    # A list of paths to the individual dataset folders.
+    DATASET_DIRECTORIES = [
+        r"D:\dev\sih\datasets\img 13k",
+        r"D:\dev\sih\datasets\img 6k"
+    ]
     CLASS_SELECTION_MODE = "TOP_N" 
     TOP_N_CLASSES = 20
     SPECIFIC_CLASSES = ["Gir", "Sahiwal", "Jersey"]

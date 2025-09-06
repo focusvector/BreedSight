@@ -19,7 +19,7 @@ from config import Config # Imports the Config class from our local config.py fi
 from dataset_utils import FusedDataset, prepare_fused_samples # Imports our custom dataset and preparation function.
 from engine import train_one_epoch, validate # Imports our core training and validation functions from engine.py.
 from model import build_model # Imports our model-building function from model.py.
-from plotting_utils import LivePlot # Imports our live plotting class from plotting_utils.py.
+from plotting_utils import LivePlot
 
 # =========================================
 # 1. Helper Functions
@@ -33,40 +33,14 @@ def set_seed(seed):
         torch.cuda.manual_seed_all(seed) # Sets the seed for all available GPUs.
         torch.backends.cudnn.benchmark = True # Enables cuDNN's auto-tuner, which can speed up training if input sizes don't change.
 
-def auto_detect_and_prepare_datasets(root_dir):
-    """Scans a root directory for datasets, unzipping any .zip files if necessary."""
-    print(f"🔍 Scanning for datasets in: {root_dir}") # Prints a status message indicating the scan location.
-    datasets_root_path = pathlib.Path(root_dir) # Creates a Path object for easier manipulation.
-    valid_dataset_paths = [] # Initializes a list to store the paths of valid dataset folders.
-    if not datasets_root_path.is_dir(): # Checks if the provided root path is not a directory.
-        print(f"❌ Error: Root datasets directory not found at '{root_dir}'") # Prints an error message if the path is invalid.
-        return [] # Returns an empty list to indicate failure.
-    for item_path in datasets_root_path.iterdir(): # Iterates over every file and folder in the root directory.
-        if item_path.is_file() and item_path.suffix == '.zip': # Checks if the item is a file with a .zip extension.
-            extracted_folder_path = datasets_root_path / item_path.stem # Defines the path where the ZIP file will be extracted.
-            if not extracted_folder_path.is_dir(): # Checks if the destination folder does not already exist.
-                print(f"  - Found ZIP file: '{item_path.name}'. Extracting...") # Announces the extraction process.
-                with zipfile.ZipFile(item_path, 'r') as zip_ref: # Opens the ZIP file in read mode.
-                    zip_ref.extractall(extracted_folder_path) # Extracts all contents of the ZIP file to the destination folder.
-                print(f"  ✔ Extracted to: '{extracted_folder_path.name}'") # Confirms successful extraction.
-            else: # If the destination folder already exists.
-                print(f"  - Found ZIP file: '{item_path.name}'. Matching folder already exists.") # Informs the user that extraction is skipped.
-            valid_dataset_paths.append(str(extracted_folder_path)) # Adds the path of the extracted folder to the list of valid datasets.
-        elif item_path.is_dir(): # Checks if the item is a directory.
-            print(f"  - Found dataset folder: '{item_path.name}'") # Announces that a dataset folder was found.
-            valid_dataset_paths.append(str(item_path)) # Adds the directory path to the list of valid datasets.
-    print(f"\n✅ Finished detection. Using {len(valid_dataset_paths)} dataset(s): {valid_dataset_paths}\n") # Prints a summary of all found datasets.
-    return valid_dataset_paths # Returns the list of valid dataset paths.
-
 # =========================================
 # 2. Data Preparation Function
 # =========================================
 def prepare_sample_lists(cfg):
     """Fuses datasets and returns lists of samples for training and validation."""
-    dataset_directories = auto_detect_and_prepare_datasets(cfg.DATASETS_ROOT_DIR) # First, find all dataset directories.
-    # Note: class_weights_list is now expected to be None from this function call.
+    # The list of dataset directories now comes directly from the config.
     train_samples, valid_samples, unified_class_map, _ = prepare_fused_samples( # Call the main data fusion function.
-        dataset_dirs=dataset_directories, 
+        dataset_dirs=cfg.DATASET_DIRECTORIES, 
         selection_mode=cfg.CLASS_SELECTION_MODE,
         top_n=cfg.TOP_N_CLASSES,
         specific_classes=cfg.SPECIFIC_CLASSES

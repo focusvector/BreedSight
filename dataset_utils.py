@@ -278,26 +278,42 @@ if __name__ == '__main__':
 	"""
 	print("\n--- Running dataset_utils.py in test mode ---")
 	
-	# Define the path to your datasets for testing.
-	# Make sure this path is correct.
-	test_dataset_root = r"D:\dev\sih\datasets"
+	# Define the path to the top-level directory containing all your dataset folders.
+	datasets_root = r"D:\dev\sih\datasets"
 	
-	# Call the main function with some test parameters.
-	train_s, valid_s, class_map, _ = prepare_fused_samples(
-		dataset_dirs=[test_dataset_root],
-		selection_mode="TOP_N",
-		top_n=5 # Let's just look for the top 5 classes for a quick test.
-	)
-	
-	# Print a summary of the results.
-	print("\n--- Test Summary ---")
-	if train_s:
-		print(f"✅ Successfully found {len(train_s)} training samples.")
-		print(f"✅ Successfully found {len(valid_s)} validation samples.")
-		print(f"✅ Class map created for {len(class_map)} classes: {list(class_map.keys())}")
+	# --- Mimic the auto-detection from train.py ---
+	print(f"🔍 Scanning for dataset folders in: {datasets_root}")
+	root_path = pathlib.Path(datasets_root)
+	if not root_path.is_dir():
+		print(f"❌ Error: Root datasets directory not found at '{datasets_root}'")
 	else:
-		print("❌ Test failed: No training samples were found.")
-		print("Please check the following:")
-		print(f"1. The test_dataset_root path is correct: '{test_dataset_root}'")
-		print("2. The directory contains subfolders for each class.")
-		print("3. The class subfolders contain image files.")
+		# Find all subdirectories in the root, these are our actual datasets.
+		# This is what was missing. We need to pass the individual dataset folders.
+		actual_dataset_dirs = [str(d) for d in root_path.iterdir() if d.is_dir()]
+		
+		if not actual_dataset_dirs:
+			print(f"❌ No dataset folders found inside '{datasets_root}'.")
+		else:
+			print(f"✅ Found dataset folders to process: {actual_dataset_dirs}")
+			
+			# Call the main function with the list of found dataset directories.
+			train_s, valid_s, class_map, _ = prepare_fused_samples(
+				dataset_dirs=actual_dataset_dirs,
+				selection_mode="TOP_N",
+				top_n=5 # Let's just look for the top 5 classes for a quick test.
+			)
+			
+			# Print a summary of the results.
+			print("\n--- Test Summary ---")
+			if train_s or valid_s:
+				print(f"✅ Successfully found {len(train_s)} training samples.")
+				print(f"✅ Successfully found {len(valid_s)} validation samples.")
+				if class_map:
+					print(f"✅ Class map created for {len(class_map)} classes: {list(class_map.keys())}")
+				else:
+					print("❌ Test failed: Class map is empty.")
+			else:
+				print("❌ Test failed: No training or validation samples were found.")
+				print("Please check the following:")
+				print(f"1. The dataset folders inside '{datasets_root}' are structured correctly (e.g., with class subfolders).")
+				print("2. The class subfolders contain image files.")
