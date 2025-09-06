@@ -65,10 +65,10 @@ def prepare_fused_samples(dataset_dirs, selection_mode="TOP_N", top_n=10, specif
                     if class_dir.is_dir():
                         class_name = _normalize_class_name(class_dir.name) # Normalize the class name.
                         target_map.setdefault(class_name, [])
-                        all_class_paths.setdefault(class_name, [])
+                        all_class_paths.setdefault(class_name, []) # Ensure class exists in all_class_paths
                         image_paths = list(class_dir.glob('*.*'))
                         target_map[class_name].extend(image_paths)
-                        all_class_paths[class_name].extend(image_paths)
+                        all_class_paths[class_name].extend(image_paths) # FIX: Add all images to the master list for counting
         else:
             # Handle simple structure (all images go to training pool)
             for class_dir in path.iterdir():

@@ -5,7 +5,7 @@ class Config:
     # --- Dataset and Class Selection ---
     DATASETS_ROOT_DIR = r"D:\dev\sih\datasets"
     CLASS_SELECTION_MODE = "TOP_N" 
-    TOP_N_CLASSES = 41
+    TOP_N_CLASSES = 20
     SPECIFIC_CLASSES = ["Gir", "Sahiwal", "Jersey"]
     
     # --- Training Hyperparameters ---
