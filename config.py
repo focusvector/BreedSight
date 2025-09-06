@@ -22,9 +22,14 @@ class Config:
     PLOT_SAVE_PATH = "training_history.png"
 
     # --- Hardware and Reproducibility ---
-    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    RANDOM_SEED = 42
+    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu") # Automatically select GPU if available, otherwise fall back to CPU.
+    RANDOM_SEED = 42 # A fixed seed for all random number generators to ensure results are reproducible.
 
     # --- Performance Tuning ---
-    PRELOAD_DATASET_INTO_RAM = True # Set to True to trade RAM for faster training speed.
+    # LOADING_MODE: "PRELOAD_ALL", "ON_DEMAND", "CHUNKED"
+    # - PRELOAD_ALL: Loads entire dataset into RAM. Fastest, but uses most memory.
+    # - ON_DEMAND: Loads images from disk one by one. Slowest, but uses least memory.
+    # - CHUNKED: Loads dataset in large chunks. A balance between speed and memory.
+    LOADING_MODE = "CHUNKED" 
+    CHUNK_SIZE = 8000 # Number of images to load into RAM at a time if using CHUNKED mode.
     MEMORY_SAFETY_MARGIN = 0.75 # Use 75% of available RAM at most for pre-loading.

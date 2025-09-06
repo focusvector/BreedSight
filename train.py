@@ -61,8 +61,8 @@ def auto_detect_and_prepare_datasets(root_dir):
 # =========================================
 # 2. Data Preparation Function
 # =========================================
-def prepare_data(cfg):
-    """Fuses datasets, defines transforms, and creates DataLoaders using a config object."""
+def prepare_sample_lists(cfg):
+    """Fuses datasets and returns lists of samples for training and validation."""
     dataset_directories = auto_detect_and_prepare_datasets(cfg.DATASETS_ROOT_DIR) # First, find all dataset directories.
     # Note: class_weights_list is now expected to be None from this function call.
     train_samples, valid_samples, unified_class_map, _ = prepare_fused_samples( # Call the main data fusion function.
@@ -76,22 +76,6 @@ def prepare_data(cfg):
     with open(cfg.CLASS_MAP_PATH, "w") as f: json.dump(unified_class_map, f, indent=4) # Save the class-to-integer mapping to a JSON file.
     print(f"Saved class mapping for {num_classes} classes to {cfg.CLASS_MAP_PATH}") # Confirm that the class map was saved.
 
-
-    train_transform = transforms.Compose([ # Define the sequence of transformations for the training data.
-        transforms.RandomResizedCrop(cfg.IMAGE_SIZE, scale=(0.8, 1.0)), # Randomly crop and resize the image.
-        transforms.RandomHorizontalFlip(), # Randomly flip the image horizontally.
-        transforms.RandomRotation(15), # Randomly rotate the image by up to 15 degrees.
-        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2), # Randomly change the brightness, contrast, and saturation.
-        transforms.ToTensor(), # Convert the PIL Image to a PyTorch tensor.
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]), # Normalize the tensor with ImageNet mean and std.
-        transforms.RandomErasing(p=0.5, scale=(0.02, 0.25)), # Randomly erase a rectangular region in the image.
-    ])
-    val_transform = transforms.Compose([ # Define the sequence of transformations for the validation data (no augmentation).
-        transforms.Resize((cfg.IMAGE_SIZE, cfg.IMAGE_SIZE)), # Resize the image to the required input size.
-        transforms.ToTensor(), # Convert the PIL Image to a PyTorch tensor.
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]), # Normalize the tensor with ImageNet mean and std.
-    ])
-    
     if not valid_samples: # If no pre-split validation set was found.
         print("No pre-split validation set found. Performing 80/20 random split on the list of training samples.") # Announce the split.
         train_size = int(0.8 * len(train_samples)) # Calculate the size of the training set (80%).
@@ -104,34 +88,8 @@ def prepare_data(cfg):
         print("Using pre-split validation set found in dataset folders.") # Announce that the pre-split set is being used.
         final_train_samples = train_samples # Use the training samples as is.
         final_valid_samples = valid_samples # Use the validation samples as is.
-
-    # --- FIX: Calculate class weights based on the FINAL training set ---
-    print("\n⚖️ Calculating class weights for the final training set...") # Announce the weight calculation.
-    from collections import Counter # Import Counter for this specific task.
-    label_counts = Counter([label for _, label in final_train_samples]) # Count the occurrences of each class label in the final training set.
-    total_samples = len(final_train_samples) # Get the total number of training samples.
-    class_weights = torch.zeros(num_classes) # Initialize a tensor of zeros to hold the weights.
-    for i in range(num_classes): # Loop through each possible class index.
-        count = label_counts.get(i, 0) # Get the count for the current class, defaulting to 0 if not present.
-        if count == 0: # If a class has no samples in the training set.
-            class_weights[i] = 1.0 # Assign a neutral weight of 1.0.
-        else: # If the class has samples.
-            class_weights[i] = total_samples / (num_classes * count) # Calculate the inverse frequency weight.
-    class_weights = class_weights.to(cfg.DEVICE) # Move the weights tensor to the target device (CPU or GPU).
-    print(f"Calculated weights: {class_weights}") # Print the final calculated weights.
-
-    train_dataset = FusedDataset(final_train_samples, transform=train_transform, preload_into_ram=cfg.PRELOAD_DATASET_INTO_RAM, safety_margin=cfg.MEMORY_SAFETY_MARGIN) # Create the training dataset object.
-    val_dataset = FusedDataset(final_valid_samples, transform=val_transform, preload_into_ram=cfg.PRELOAD_DATASET_INTO_RAM, safety_margin=cfg.MEMORY_SAFETY_MARGIN) # Create the validation dataset object.
-
-    # --- FIX: Optimize num_workers based on pre-loading status ---
-    num_workers = 4 if not train_dataset.should_preload else 0 # Set num_workers to 0 if data is in RAM, otherwise use 4.
-    if num_workers == 0: # If num_workers was set to 0.
-        print("Dataset is pre-loaded into RAM. Setting num_workers to 0 for optimal performance.") # Inform the user about the optimization.
-
-    train_loader = DataLoader(train_dataset, batch_size=cfg.BATCH_SIZE, shuffle=True, num_workers=num_workers, pin_memory=True) # Create the DataLoader for the training set.
-    val_loader = DataLoader(val_dataset, batch_size=cfg.BATCH_SIZE, shuffle=False, num_workers=num_workers, pin_memory=True) # Create the DataLoader for the validation set.
-    
-    return train_loader, val_loader, num_classes, class_weights # Return all the necessary objects for the main training loop.
+        
+    return final_train_samples, final_valid_samples, unified_class_map
 
 # =========================================
 # 3. Main Execution Block
@@ -146,8 +104,42 @@ if __name__ == "__main__": # This block ensures the code runs only when the scri
         print("❌ No GPU found. Training will run on CPU.") # Inform the user that the CPU will be used.
     print(f"Using device: {cfg.DEVICE}") # Print the selected device.
 
-    train_loader, val_loader, num_classes, class_weights = prepare_data(cfg) # Call the data preparation function to get DataLoaders and other info.
-    
+    # --- Get Sample Lists ---
+    final_train_samples, final_valid_samples, unified_class_map = prepare_sample_lists(cfg)
+    num_classes = len(unified_class_map)
+
+    # --- Calculate Class Weights ---
+    print("\n⚖️ Calculating class weights for the final training set...") # Announce the weight calculation.
+    from collections import Counter # Import Counter for this specific task.
+    label_counts = Counter([label for _, label in final_train_samples]) # Count the occurrences of each class label in the final training set.
+    total_samples = len(final_train_samples) # Get the total number of training samples.
+    class_weights = torch.zeros(num_classes) # Initialize a tensor of zeros to hold the weights.
+    for i in range(num_classes): # Loop through each possible class index.
+        count = label_counts.get(i, 0) # Get the count for the current class, defaulting to 0 if not present.
+        if count == 0: # If a class has no samples in the training set.
+            class_weights[i] = 1.0 # Assign a neutral weight of 1.0.
+        else: # If the class has samples.
+            class_weights[i] = total_samples / (num_classes * count) # Calculate the inverse frequency weight.
+    class_weights = class_weights.to(cfg.DEVICE) # Move the weights tensor to the target device (CPU or GPU).
+    print(f"Calculated weights: {class_weights}") # Print the final calculated weights.
+
+    # --- Define Transforms ---
+    train_transform = transforms.Compose([ # Define the sequence of transformations for the training data.
+        transforms.RandomResizedCrop(cfg.IMAGE_SIZE, scale=(0.8, 1.0)), # Randomly crop and resize the image.
+        transforms.RandomHorizontalFlip(), # Randomly flip the image horizontally.
+        transforms.RandomRotation(15), # Randomly rotate the image by up to 15 degrees.
+        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2), # Randomly change the brightness, contrast, and saturation.
+        transforms.ToTensor(), # Convert the PIL Image to a PyTorch tensor.
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]), # Normalize the tensor with ImageNet mean and std.
+        transforms.RandomErasing(p=0.5, scale=(0.02, 0.25)), # Randomly erase a rectangular region in the image.
+    ])
+    val_transform = transforms.Compose([ # Define the sequence of transformations for the validation data (no augmentation).
+        transforms.Resize((cfg.IMAGE_SIZE, cfg.IMAGE_SIZE)), # Resize the image to the required input size.
+        transforms.ToTensor(), # Convert the PIL Image to a PyTorch tensor.
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]), # Normalize the tensor with ImageNet mean and std.
+    ])
+
+    # --- Model, Loss, Optimizer, and Scheduler ---
     model = build_model(num_classes, cfg.DEVICE) # Build the model architecture and move it to the device.
     criterion = nn.CrossEntropyLoss(weight=class_weights) # Define the loss function, passing the calculated class weights to handle imbalance.
     params_to_update = [p for p in model.parameters() if p.requires_grad] # Create a list of only the model parameters that are trainable (not frozen).
@@ -155,16 +147,66 @@ if __name__ == "__main__": # This block ensures the code runs only when the scri
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min", patience=3) # Define a scheduler to reduce the learning rate if validation loss plateaus.
     scaler = torch.amp.GradScaler(enabled=torch.cuda.is_available()) # Initialize a gradient scaler for automatic mixed precision training.
     
+    # --- Training History and Plotting ---
     history = {"train_loss": [], "val_loss": [], "val_acc": []} # Initialize a dictionary to store the training history for plotting.
     live_plot = LivePlot(save_path=cfg.PLOT_SAVE_PATH) # Initialize the live plotting object.
     best_val_loss = float("inf") # Initialize the best validation loss to infinity.
     epochs_no_improve = 0 # Initialize a counter for early stopping.
     
+    # =========================================
+    # 4. Main Training Loop
+    # =========================================
     for epoch in range(cfg.EPOCHS): # Start the main training loop for the specified number of epochs.
         start_time = time.time() # Record the start time of the epoch.
         
-        train_loss = train_one_epoch(model, train_loader, optimizer, criterion, scaler, cfg.DEVICE) # Perform one epoch of training.
-        val_loss, val_acc = validate(model, val_loader, criterion, cfg.DEVICE) # Perform one epoch of validation.
+        # --- Training Phase ---
+        model.train() # Set model to training mode for the whole epoch.
+        
+        if cfg.LOADING_MODE == 'CHUNKED':
+            print(f"\n--- Epoch {epoch+1}/{cfg.EPOCHS} (Chunked Mode) ---")
+            random.shuffle(final_train_samples) # Shuffle all samples before chunking for better training.
+            
+            num_chunks = (len(final_train_samples) + cfg.CHUNK_SIZE - 1) // cfg.CHUNK_SIZE
+            epoch_train_loss = 0.0
+            
+            for i in range(num_chunks):
+                print(f"\n-- Training on Chunk {i+1}/{num_chunks} --")
+                chunk_samples = final_train_samples[i*cfg.CHUNK_SIZE : (i+1)*cfg.CHUNK_SIZE]
+                
+                # Preload this specific chunk into a FusedDataset instance.
+                chunk_dataset = FusedDataset(chunk_samples, transform=train_transform, preload=True, safety_margin=cfg.MEMORY_SAFETY_MARGIN)
+                
+                num_workers = 4 if not chunk_dataset.samples_are_preloaded else 0
+                if num_workers == 0 and chunk_dataset.samples_are_preloaded:
+                    print("Chunk is pre-loaded. Setting num_workers to 0 for this chunk.")
+                
+                chunk_loader = DataLoader(chunk_dataset, batch_size=cfg.BATCH_SIZE, shuffle=True, num_workers=num_workers, pin_memory=True)
+                
+                # The engine function works on any loader, which is great for this chunked approach.
+                chunk_loss = train_one_epoch(model, chunk_loader, optimizer, criterion, scaler, cfg.DEVICE)
+                epoch_train_loss += chunk_loss * len(chunk_dataset) # Accumulate weighted loss to average later.
+            
+            train_loss = epoch_train_loss / len(final_train_samples) # Calculate the average loss over the full epoch.
+            
+        else: # Handle PRELOAD_ALL and ON_DEMAND modes
+            print(f"\n--- Epoch {epoch+1}/{cfg.EPOCHS} ({cfg.LOADING_MODE} Mode) ---")
+            should_preload = (cfg.LOADING_MODE == 'PRELOAD_ALL')
+            train_dataset = FusedDataset(final_train_samples, transform=train_transform, preload=should_preload, safety_margin=cfg.MEMORY_SAFETY_MARGIN)
+            
+            num_workers = 4 if not train_dataset.samples_are_preloaded else 0
+            if num_workers == 0 and train_dataset.samples_are_preloaded:
+                print("Dataset is pre-loaded into RAM. Setting num_workers to 0 for optimal performance.")
+
+            train_loader = DataLoader(train_dataset, batch_size=cfg.BATCH_SIZE, shuffle=True, num_workers=num_workers, pin_memory=True)
+            train_loss = train_one_epoch(model, train_loader, optimizer, criterion, scaler, cfg.DEVICE)
+
+        # --- Validation Phase ---
+        # Always attempt to preload the validation set as it's usually smaller.
+        val_dataset = FusedDataset(final_valid_samples, transform=val_transform, preload=True, safety_margin=cfg.MEMORY_SAFETY_MARGIN)
+        num_workers = 4 if not val_dataset.samples_are_preloaded else 0
+        val_loader = DataLoader(val_dataset, batch_size=cfg.BATCH_SIZE, shuffle=False, num_workers=num_workers, pin_memory=True)
+        val_loss, val_acc = validate(model, val_loader, criterion, cfg.DEVICE)
+        
         scheduler.step(val_loss) # Update the learning rate scheduler based on the validation loss.
 
         history["train_loss"].append(train_loss) # Append the current training loss to the history.

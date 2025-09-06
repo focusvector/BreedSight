@@ -179,14 +179,14 @@ class FusedDataset(Dataset):
 	A custom dataset that works with a list of (image_path, label) tuples.
 	Includes an option to preload all images into RAM to speed up training.
 	"""
-	def __init__(self, samples, transform=None, preload_into_ram=False, safety_margin=0.75):
+	def __init__(self, samples, transform=None, preload=False, safety_margin=0.75):
 		"""
 		Initializes the dataset.
 
 		Args:
 			samples (list): A list of (image_path, label) tuples.
 			transform (callable, optional): A function/transform to apply to the images.
-			preload_into_ram (bool): If True, attempts to load all images into memory.
+			preload (bool): If True, attempts to load all provided samples into memory.
 			safety_margin (float): The fraction of available RAM to consider safe for pre-loading.
 		"""
 		def _is_safe_to_preload(samples_to_check, margin):
@@ -216,24 +216,29 @@ class FusedDataset(Dataset):
 				return False # Return False to disable pre-loading.
 
 		self.transform = transform # Store the image transformation pipeline.
+		self.samples_are_preloaded = False # A flag to indicate if the samples are in RAM.
 
-		# Perform safety check before attempting to preload.
-		self.should_preload = preload_into_ram and _is_safe_to_preload(samples, safety_margin) # Determine if pre-loading should happen based on user config and the safety check.
-
-		# If preloading is enabled and safe, load all images from disk into a list.
-		if self.should_preload: # If pre-loading is enabled and deemed safe.
-			print(f"🚀 Pre-loading {len(samples)} images into RAM. This may take a moment...") # Announce the pre-loading process.
-			# self.samples will store (PIL.Image, label) tuples instead of (path, label).
-			self.samples = [] # Initialize an empty list to store the in-memory images and labels.
-			for path, label in tqdm(samples, desc="Pre-loading"): # Loop through the samples with a progress bar.
-				try: # Use a try-except block to handle corrupted image files.
-					# Open the image from the path and convert it to RGB.
-					image = Image.open(path).convert("RGB") # Open the image file and ensure it's in RGB format.
-					self.samples.append((image, label)) # Append the PIL Image object and its label to the list.
-				except Exception as e: # If opening the image fails.
-					# If an image is corrupted, it will be skipped during pre-loading.
-					print(f"⚠️ Warning: Could not load image {path}. Error: {e}. Skipping.") # Print a warning with the file path and error.
-		else: # If pre-loading is disabled or unsafe.
+		# If preloading is requested for this specific set of samples.
+		if preload:
+			# Perform safety check before attempting to preload.
+			if _is_safe_to_preload(samples, safety_margin):
+				print(f"🚀 Pre-loading {len(samples)} images into RAM. This may take a moment...") # Announce the pre-loading process.
+				# self.samples will store (PIL.Image, label) tuples instead of (path, label).
+				loaded_samples = [] # Initialize an empty list to store the in-memory images and labels.
+				for path, label in tqdm(samples, desc="Pre-loading"): # Loop through the samples with a progress bar.
+					try: # Use a try-except block to handle corrupted image files.
+						# Open the image from the path and convert it to RGB.
+						image = Image.open(path).convert("RGB") # Open the image file and ensure it's in RGB format.
+						loaded_samples.append((image, label)) # Append the PIL Image object and its label to the list.
+					except Exception as e: # If opening the image fails.
+						# If an image is corrupted, it will be skipped during pre-loading.
+						print(f"⚠️ Warning: Could not load image {path}. Error: {e}. Skipping.") # Print a warning with the file path and error.
+				self.samples = loaded_samples # Replace the path list with the list of loaded images.
+				self.samples_are_preloaded = True # Set the flag to indicate success.
+			else:
+				# If safety check fails, fall back to on-demand loading for this set of samples.
+				self.samples = samples
+		else: # If pre-loading is not requested.
 			# If not preloading, just store the list of file paths.
 			self.samples = samples # Simply store the original list of (path, label) tuples.
 
@@ -245,7 +250,7 @@ class FusedDataset(Dataset):
 		"""
 		Retrieves a sample from the dataset at the given index.
 		"""
-		if self.should_preload: # If the data is pre-loaded in RAM.
+		if self.samples_are_preloaded: # If the data is pre-loaded in RAM.
 			# If preloaded, the image is already a PIL object in memory.
 			image, label = self.samples[idx] # Directly get the PIL Image object and label from the list.
 		else: # If data is not pre-loaded.
