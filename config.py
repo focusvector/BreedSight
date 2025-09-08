@@ -14,17 +14,16 @@ class Config:
     
     # --- Training Hyperparameters ---
     BATCH_SIZE = 32
-    IMAGE_SIZE = 224  # EfficientNet-B0 uses 224x224
+    IMAGE_SIZE = 299  # InceptionV3 requires 299x299
     EPOCHS = 50
     PATIENCE = 7
     LEARNING_RATE = 0.0001
     WEIGHT_DECAY = 1e-4
-    LABEL_SMOOTHING = 0.1 # Helps prevent overfitting on noisy datasets
     
     # --- File Paths ---
-    MODEL_SAVE_PATH = "final_efficientnet_model.pth"
+    MODEL_SAVE_PATH = "final_inception_model.pth"
     CLASS_MAP_PATH = "final_class_mapping.json"
-    PLOT_SAVE_PATH = "training_history_efficientnet.png"
+    PLOT_SAVE_PATH = "training_history_inception.png"
 
     # --- Hardware and Reproducibility ---
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu") # Automatically select GPU if available, otherwise fall back to CPU.

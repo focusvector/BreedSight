@@ -162,7 +162,7 @@ if __name__ == "__main__":
 
         # --- Re-initialize Model, Optimizer, etc. for each fold ---
         model = build_model(num_classes, cfg.DEVICE)
-        criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=cfg.LABEL_SMOOTHING)
+        criterion = nn.CrossEntropyLoss(weight=class_weights)
         params_to_update = [p for p in model.parameters() if p.requires_grad]
         optimizer = optim.Adam(params_to_update, lr=cfg.LEARNING_RATE, weight_decay=cfg.WEIGHT_DECAY)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min", patience=3, verbose=True)
