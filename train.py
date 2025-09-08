@@ -73,7 +73,7 @@ def prepare_all_samples(cfg):
 # =========================================
 if __name__ == "__main__":
     cfg = Config()
-    set_seed(cfg.RANDOM_SEED)
+    set_seed(42) # Set a fixed random seed for reproducibility
     
     # --- Checkpoint Setup ---
     CHECKPOINT_PATH = "training_checkpoint.pth"
