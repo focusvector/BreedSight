@@ -19,7 +19,7 @@ from config import Config # Imports the Config class from our local config.py fi
 from dataset_utils import FusedDataset, prepare_fused_samples # Remove ChunkedFusedDataset import
 from engine import train_one_epoch, validate # Imports our core training and validation functions from engine.py.
 from model import build_model # Imports our model-building function from model.py.
-from plotting_utils import LivePlot
+from plotting_utils import TrainingPlotter
 
 # =========================================
 # 1. Helper Functions
@@ -123,7 +123,7 @@ if __name__ == "__main__": # This block ensures the code runs only when the scri
     
     # --- Training History and Plotting ---
     history = {"train_loss": [], "val_loss": [], "val_acc": []} # Initialize a dictionary to store the training history for plotting.
-    live_plot = LivePlot(save_path=cfg.PLOT_SAVE_PATH) # Initialize the live plotting object.
+    plotter = TrainingPlotter(save_path=cfg.PLOT_SAVE_PATH) # Initialize the plotter object.
     best_val_loss = float("inf") # Initialize the best validation loss to infinity.
     epochs_no_improve = 0 # Initialize a counter for early stopping.
     
@@ -160,7 +160,6 @@ if __name__ == "__main__": # This block ensures the code runs only when the scri
             history["train_loss"].append(train_loss) # Append the current training loss to the history.
             history["val_loss"].append(val_loss) # Append the current validation loss to the history.
             history["val_acc"].append(val_acc.item()) # Append the current validation accuracy to the history.
-            live_plot.update(history) # Update the live plot with the new history data.
             
             elapsed_time = time.time() - start_time # Calculate the time taken for the epoch.
             print(f"Epoch {epoch+1}/{cfg.EPOCHS} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Acc: {val_acc:.4f} | Time: {elapsed_time:.1f}s") # Print a summary of the epoch's results.
@@ -178,5 +177,5 @@ if __name__ == "__main__": # This block ensures the code runs only when the scri
     finally:
         # This block will always run, even if the training is interrupted with Ctrl+C.
         print("\nTraining finished or interrupted. Saving final plot...")
-        live_plot.save_and_close() # Save the plot showing the history up to the last completed epoch.
+        plotter.plot_and_save(history) # Save the plot showing the history up to the last completed epoch.
         print("Plot saved.")
