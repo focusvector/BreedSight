@@ -142,37 +142,41 @@ if __name__ == "__main__": # This block ensures the code runs only when the scri
     val_loader = DataLoader(val_dataset, batch_size=cfg.BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
 
 
-    for epoch in range(cfg.EPOCHS): # Start the main training loop for the specified number of epochs.
-        start_time = time.time() # Record the start time of the epoch.
-        
-        # --- Training Phase ---
-        model.train() # Set model to training mode for the whole epoch.
-        
-        # The training loop is now simple again. It calls the training function once per epoch.
-        train_loss = train_one_epoch(model, train_loader, optimizer, criterion, scaler, cfg.DEVICE)
+    try:
+        for epoch in range(cfg.EPOCHS): # Start the main training loop for the specified number of epochs.
+            start_time = time.time() # Record the start time of the epoch.
+            
+            # --- Training Phase ---
+            model.train() # Set model to training mode for the whole epoch.
+            
+            # The training loop is now simple again. It calls the training function once per epoch.
+            train_loss = train_one_epoch(model, train_loader, optimizer, criterion, scaler, cfg.DEVICE)
 
-        # --- Validation Phase ---
-        val_loss, val_acc = validate(model, val_loader, criterion, cfg.DEVICE)
-        
-        scheduler.step(val_loss) # Update the learning rate scheduler based on the validation loss.
+            # --- Validation Phase ---
+            val_loss, val_acc = validate(model, val_loader, criterion, cfg.DEVICE)
+            
+            scheduler.step(val_loss) # Update the learning rate scheduler based on the validation loss.
 
-        history["train_loss"].append(train_loss) # Append the current training loss to the history.
-        history["val_loss"].append(val_loss) # Append the current validation loss to the history.
-        history["val_acc"].append(val_acc.item()) # Append the current validation accuracy to the history.
-        live_plot.update(history) # Update the live plot with the new history data.
-        
-        elapsed_time = time.time() - start_time # Calculate the time taken for the epoch.
-        print(f"Epoch {epoch+1}/{cfg.EPOCHS} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Acc: {val_acc:.4f} | Time: {elapsed_time:.1f}s") # Print a summary of the epoch's results.
-        
-        if val_loss < best_val_loss: # Check if the current validation loss is better than the best one seen so far.
-            torch.save(model.state_dict(), cfg.MODEL_SAVE_PATH) # If yes, save the model's weights.
-            best_val_loss = val_loss # Update the best validation loss.
-            epochs_no_improve = 0 # Reset the early stopping counter.
-            print(f"Model saved. Validation loss improved to {best_val_loss:.4f}") # Print a confirmation message.
-        else: # If the validation loss did not improve.
-            epochs_no_improve += 1 # Increment the early stopping counter.
-            if epochs_no_improve >= cfg.PATIENCE: # Check if the patience limit has been reached.
-                print("Early stopping.") # Announce that training is stopping early.
-                break # Exit the training loop.
-                
-    live_plot.save_and_close() # After the loop finishes, save the final plot and close the window.
+            history["train_loss"].append(train_loss) # Append the current training loss to the history.
+            history["val_loss"].append(val_loss) # Append the current validation loss to the history.
+            history["val_acc"].append(val_acc.item()) # Append the current validation accuracy to the history.
+            live_plot.update(history) # Update the live plot with the new history data.
+            
+            elapsed_time = time.time() - start_time # Calculate the time taken for the epoch.
+            print(f"Epoch {epoch+1}/{cfg.EPOCHS} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Acc: {val_acc:.4f} | Time: {elapsed_time:.1f}s") # Print a summary of the epoch's results.
+            
+            if val_loss < best_val_loss: # Check if the current validation loss is better than the best one seen so far.
+                torch.save(model.state_dict(), cfg.MODEL_SAVE_PATH) # If yes, save the model's weights.
+                best_val_loss = val_loss # Update the best validation loss.
+                epochs_no_improve = 0 # Reset the early stopping counter.
+                print(f"Model saved. Validation loss improved to {best_val_loss:.4f}") # Print a confirmation message.
+            else: # If the validation loss did not improve.
+                epochs_no_improve += 1 # Increment the early stopping counter.
+                if epochs_no_improve >= cfg.PATIENCE: # Check if the patience limit has been reached.
+                    print("Early stopping.") # Announce that training is stopping early.
+                    break # Exit the training loop.
+    finally:
+        # This block will always run, even if the training is interrupted with Ctrl+C.
+        print("\nTraining finished or interrupted. Saving final plot...")
+        live_plot.save_and_close() # Save the plot showing the history up to the last completed epoch.
+        print("Plot saved.")
