@@ -19,8 +19,13 @@ class BreedSightModel(nn.Module):
         num_features = self.backbone.fc.in_features
         
         self.backbone.fc = nn.Sequential(
-            nn.Dropout(p=0.5),
-            nn.Linear(num_features, num_classes)
+            nn.Linear(num_features, 1024),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(1024, 512),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(512, num_classes)
         )
         
         if hasattr(self.backbone, 'AuxLogits'):

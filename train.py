@@ -19,7 +19,8 @@ from config import Config # Imports the Config class from our local config.py fi
 from dataset_utils import FusedDataset, prepare_fused_samples # Remove ChunkedFusedDataset import
 from engine import train_one_epoch, validate # Imports our core training and validation functions from engine.py.
 from model import build_model # Imports our model-building function from model.py.
-from plotting_utils import TrainingPlotter
+from plotting_utils import KFoldTrainingPlotter
+from sklearn.model_selection import StratifiedKFold
 
 # =========================================
 # 1. Helper Functions
@@ -36,146 +37,160 @@ def set_seed(seed):
 # =========================================
 # 2. Data Preparation Function
 # =========================================
-def prepare_sample_lists(cfg):
-    """Fuses datasets and returns lists of samples for training and validation."""
+def prepare_all_samples(cfg):
+    """Fuses datasets and returns a single list of all available samples."""
     # The list of dataset directories now comes directly from the config.
-    train_samples, valid_samples, unified_class_map, _ = prepare_fused_samples( # Call the main data fusion function.
+    train_samples, valid_samples, unified_class_map, _ = prepare_fused_samples(
         dataset_dirs=cfg.DATASET_DIRECTORIES, 
         selection_mode=cfg.CLASS_SELECTION_MODE,
         top_n=cfg.TOP_N_CLASSES,
         specific_classes=cfg.SPECIFIC_CLASSES
     )
-    if not train_samples: raise ValueError("Dataset preparation resulted in no training samples.") # If no samples are found, raise an error to stop the script.
-    num_classes = len(unified_class_map) # Get the total number of classes being used.
-    with open(cfg.CLASS_MAP_PATH, "w") as f: json.dump(unified_class_map, f, indent=4) # Save the class-to-integer mapping to a JSON file.
-    print(f"Saved class mapping for {num_classes} classes to {cfg.CLASS_MAP_PATH}") # Confirm that the class map was saved.
-
-    if not valid_samples: # If no pre-split validation set was found.
-        print("No pre-split validation set found. Performing 80/20 random split on the list of training samples.") # Announce the split.
-        train_size = int(0.8 * len(train_samples)) # Calculate the size of the training set (80%).
-        val_size = len(train_samples) - train_size # The remaining 20% is for validation.
-        generator = torch.Generator().manual_seed(cfg.RANDOM_SEED) # Create a generator for a reproducible random split.
-        train_indices, val_indices = random_split(range(len(train_samples)), [train_size, val_size], generator=generator) # Perform the split on the indices.
-        final_train_samples = [train_samples[i] for i in train_indices] # Create the final training list from the split indices.
-        final_valid_samples = [train_samples[i] for i in val_indices] # Create the final validation list from the split indices.
-    else: # If a pre-split validation set was found.
-        print("Using pre-split validation set found in dataset folders.") # Announce that the pre-split set is being used.
-        final_train_samples = train_samples # Use the training samples as is.
-        final_valid_samples = valid_samples # Use the validation samples as is.
+    if not train_samples: 
+        raise ValueError("Dataset preparation resulted in no training samples.")
         
-    return final_train_samples, final_valid_samples, unified_class_map
+    # Combine pre-split train and validation samples into one list for K-Fold
+    all_samples = train_samples + (valid_samples if valid_samples else [])
+    
+    num_classes = len(unified_class_map)
+    with open(cfg.CLASS_MAP_PATH, "w") as f: 
+        json.dump(unified_class_map, f, indent=4)
+    print(f"Saved class mapping for {num_classes} classes to {cfg.CLASS_MAP_PATH}")
+
+    return all_samples, unified_class_map
 
 # =========================================
 # 3. Main Execution Block
 # =========================================
-if __name__ == "__main__": # This block ensures the code runs only when the script is executed directly.
-    cfg = Config() # Create an instance of our configuration class.
-    set_seed(cfg.RANDOM_SEED) # Set the random seed for reproducibility.
+if __name__ == "__main__":
+    cfg = Config()
+    set_seed(cfg.RANDOM_SEED)
     
-    if torch.cuda.is_available(): # Check if a CUDA-enabled GPU is available.
-        print(f"✅ GPU found: {torch.cuda.get_device_name(0)}") # If yes, print the name of the GPU.
-    else: # If not.
-        print("❌ No GPU found. Training will run on CPU.") # Inform the user that the CPU will be used.
-    print(f"Using device: {cfg.DEVICE}") # Print the selected device.
+    if torch.cuda.is_available():
+        print(f"✅ GPU found: {torch.cuda.get_device_name(0)}")
+    else:
+        print("❌ No GPU found. Training will run on CPU.")
+    print(f"Using device: {cfg.DEVICE}")
 
-    # --- Get Sample Lists ---
-    final_train_samples, final_valid_samples, unified_class_map = prepare_sample_lists(cfg)
+    # --- Get All Samples for K-Fold ---
+    all_samples, unified_class_map = prepare_all_samples(cfg)
     num_classes = len(unified_class_map)
-
-    # --- Calculate Class Weights ---
-    print("\n⚖️ Calculating class weights for the final training set...") # Announce the weight calculation.
-    from collections import Counter # Import Counter for this specific task.
-    label_counts = Counter([label for _, label in final_train_samples]) # Count the occurrences of each class label in the final training set.
-    total_samples = len(final_train_samples) # Get the total number of training samples.
-    class_weights = torch.zeros(num_classes) # Initialize a tensor of zeros to hold the weights.
-    for i in range(num_classes): # Loop through each possible class index.
-        count = label_counts.get(i, 0) # Get the count for the current class, defaulting to 0 if not present.
-        if count == 0: # If a class has no samples in the training set.
-            class_weights[i] = 1.0 # Assign a neutral weight of 1.0.
-        else: # If the class has samples.
-            class_weights[i] = total_samples / (num_classes * count) # Calculate the inverse frequency weight.
-    class_weights = class_weights.to(cfg.DEVICE) # Move the weights tensor to the target device (CPU or GPU).
-    print(f"Calculated weights: {class_weights}") # Print the final calculated weights.
+    
+    # Extract labels for stratified splitting
+    all_labels = [label for _, label in all_samples]
 
     # --- Define Transforms ---
-    train_transform = transforms.Compose([ # Define the sequence of transformations for the training data.
-        transforms.RandomResizedCrop(cfg.IMAGE_SIZE, scale=(0.8, 1.0)), # Randomly crop and resize the image.
-        transforms.RandomHorizontalFlip(), # Randomly flip the image horizontally.
-        transforms.RandomRotation(15), # Randomly rotate the image by up to 15 degrees.
-        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2), # Randomly change the brightness, contrast, and saturation.
-        transforms.ToTensor(), # Convert the PIL Image to a PyTorch tensor.
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]), # Normalize the tensor with ImageNet mean and std.
-        transforms.RandomErasing(p=0.5, scale=(0.02, 0.25)), # Randomly erase a rectangular region in the image.
+    train_transform = transforms.Compose([
+        transforms.RandomResizedCrop(cfg.IMAGE_SIZE, scale=(0.8, 1.0)),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomRotation(15),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+        transforms.RandomErasing(p=0.5, scale=(0.02, 0.25)),
     ])
-    val_transform = transforms.Compose([ # Define the sequence of transformations for the validation data (no augmentation).
-        transforms.Resize((cfg.IMAGE_SIZE, cfg.IMAGE_SIZE)), # Resize the image to the required input size.
-        transforms.ToTensor(), # Convert the PIL Image to a PyTorch tensor.
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]), # Normalize the tensor with ImageNet mean and std.
+    val_transform = transforms.Compose([
+        transforms.Resize((cfg.IMAGE_SIZE, cfg.IMAGE_SIZE)),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
     ])
 
-    # --- Model, Loss, Optimizer, and Scheduler ---
-    model = build_model(num_classes, cfg.DEVICE) # Build the model architecture and move it to the device.
-    criterion = nn.CrossEntropyLoss(weight=class_weights) # Define the loss function, passing the calculated class weights to handle imbalance.
-    params_to_update = [p for p in model.parameters() if p.requires_grad] # Create a list of only the model parameters that are trainable (not frozen).
-    optimizer = optim.Adam(params_to_update, lr=cfg.LEARNING_RATE, weight_decay=cfg.WEIGHT_DECAY) # Define the Adam optimizer to update the trainable parameters.
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min", patience=3) # Define a scheduler to reduce the learning rate if validation loss plateaus.
-    scaler = torch.amp.GradScaler(enabled=torch.cuda.is_available()) # Initialize a gradient scaler for automatic mixed precision training.
-    
-    # --- Training History and Plotting ---
-    history = {"train_loss": [], "val_loss": [], "val_acc": []} # Initialize a dictionary to store the training history for plotting.
-    plotter = TrainingPlotter(save_path=cfg.PLOT_SAVE_PATH) # Initialize the plotter object.
-    best_val_loss = float("inf") # Initialize the best validation loss to infinity.
-    epochs_no_improve = 0 # Initialize a counter for early stopping.
-    
+    # --- K-Fold Cross-Validation Setup ---
+    N_SPLITS = 5
+    skf = StratifiedKFold(n_splits=N_SPLITS, shuffle=True, random_state=cfg.RANDOM_SEED)
+    all_histories = []
+    fold_metrics = []
+
     # =========================================
-    # 4. Main Training Loop
+    # 4. Main K-Fold Training Loop
     # =========================================
-    # --- Create DataLoaders ---
-    # The logic is now simplified to one path.
-    train_dataset = FusedDataset(final_train_samples, transform=train_transform, preload=cfg.PRELOAD_DATASET_INTO_RAM, safety_margin=cfg.MEMORY_SAFETY_MARGIN)
-    num_workers = 4 if not train_dataset.samples_are_preloaded else 0
-    train_loader = DataLoader(train_dataset, batch_size=cfg.BATCH_SIZE, shuffle=True, num_workers=num_workers, pin_memory=True)
+    for fold, (train_idx, val_idx) in enumerate(skf.split(all_samples, all_labels)):
+        print(f"\n{'='*20} FOLD {fold+1}/{N_SPLITS} {'='*20}")
 
-    # Validation loader is created once, as it's typically small enough to preload.
-    val_dataset = FusedDataset(final_valid_samples, transform=val_transform, preload=True, safety_margin=cfg.MEMORY_SAFETY_MARGIN)
-    # Use num_workers=0 for preloaded validation set for best performance.
-    val_loader = DataLoader(val_dataset, batch_size=cfg.BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
+        # --- Create fold-specific samples and DataLoaders ---
+        train_samples = [all_samples[i] for i in train_idx]
+        val_samples = [all_samples[i] for i in val_idx]
 
+        train_dataset = FusedDataset(train_samples, transform=train_transform, preload=cfg.PRELOAD_DATASET_INTO_RAM, safety_margin=cfg.MEMORY_SAFETY_MARGIN)
+        num_workers = 4 if not train_dataset.samples_are_preloaded else 0
+        train_loader = DataLoader(train_dataset, batch_size=cfg.BATCH_SIZE, shuffle=True, num_workers=num_workers, pin_memory=True)
 
-    try:
-        for epoch in range(cfg.EPOCHS): # Start the main training loop for the specified number of epochs.
-            start_time = time.time() # Record the start time of the epoch.
-            
-            # --- Training Phase ---
-            model.train() # Set model to training mode for the whole epoch.
-            
-            # The training loop is now simple again. It calls the training function once per epoch.
-            train_loss = train_one_epoch(model, train_loader, optimizer, criterion, scaler, cfg.DEVICE)
+        val_dataset = FusedDataset(val_samples, transform=val_transform, preload=True, safety_margin=cfg.MEMORY_SAFETY_MARGIN)
+        val_loader = DataLoader(val_dataset, batch_size=cfg.BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
 
-            # --- Validation Phase ---
-            val_loss, val_acc = validate(model, val_loader, criterion, cfg.DEVICE)
-            
-            scheduler.step(val_loss) # Update the learning rate scheduler based on the validation loss.
+        # --- Calculate Class Weights for the current fold ---
+        from collections import Counter
+        label_counts = Counter([label for _, label in train_samples])
+        total_samples = len(train_samples)
+        class_weights = torch.zeros(num_classes)
+        for i in range(num_classes):
+            count = label_counts.get(i, 0)
+            class_weights[i] = total_samples / (num_classes * count) if count > 0 else 1.0
+        class_weights = class_weights.to(cfg.DEVICE)
 
-            history["train_loss"].append(train_loss) # Append the current training loss to the history.
-            history["val_loss"].append(val_loss) # Append the current validation loss to the history.
-            history["val_acc"].append(val_acc.item()) # Append the current validation accuracy to the history.
+        # --- Re-initialize Model, Optimizer, etc. for each fold ---
+        model = build_model(num_classes, cfg.DEVICE)
+        criterion = nn.CrossEntropyLoss(weight=class_weights)
+        params_to_update = [p for p in model.parameters() if p.requires_grad]
+        optimizer = optim.Adam(params_to_update, lr=cfg.LEARNING_RATE, weight_decay=cfg.WEIGHT_DECAY)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min", patience=3, verbose=True)
+        scaler = torch.amp.GradScaler(enabled=torch.cuda.is_available())
+        
+        # --- Fold-specific Training History ---
+        history = {"train_loss": [], "val_loss": [], "train_acc": [], "val_acc": [], "val_precision": [], "val_recall": [], "val_f1": []}
+        best_val_loss = float("inf")
+        epochs_no_improve = 0
+        
+        # --- Inner Training Loop for the current fold ---
+        for epoch in range(cfg.EPOCHS):
+            start_time = time.time()
             
-            elapsed_time = time.time() - start_time # Calculate the time taken for the epoch.
-            print(f"Epoch {epoch+1}/{cfg.EPOCHS} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Acc: {val_acc:.4f} | Time: {elapsed_time:.1f}s") # Print a summary of the epoch's results.
+            train_loss, train_acc = train_one_epoch(model, train_loader, optimizer, criterion, scaler, cfg.DEVICE)
+            val_loss, val_acc, val_precision, val_recall, val_f1 = validate(model, val_loader, criterion, cfg.DEVICE)
             
-            if val_loss < best_val_loss: # Check if the current validation loss is better than the best one seen so far.
-                torch.save(model.state_dict(), cfg.MODEL_SAVE_PATH) # If yes, save the model's weights.
-                best_val_loss = val_loss # Update the best validation loss.
-                epochs_no_improve = 0 # Reset the early stopping counter.
-                print(f"Model saved. Validation loss improved to {best_val_loss:.4f}") # Print a confirmation message.
-            else: # If the validation loss did not improve.
-                epochs_no_improve += 1 # Increment the early stopping counter.
-                if epochs_no_improve >= cfg.PATIENCE: # Check if the patience limit has been reached.
-                    print("Early stopping.") # Announce that training is stopping early.
-                    break # Exit the training loop.
-    finally:
-        # This block will always run, even if the training is interrupted with Ctrl+C.
-        print("\nTraining finished or interrupted. Saving final plot...")
-        plotter.plot_and_save(history) # Save the plot showing the history up to the last completed epoch.
-        print("Plot saved.")
+            scheduler.step(val_loss)
+
+            history["train_loss"].append(train_loss)
+            history["train_acc"].append(train_acc)
+            history["val_loss"].append(val_loss)
+            history["val_acc"].append(val_acc)
+            history["val_precision"].append(val_precision)
+            history["val_recall"].append(val_recall)
+            history["val_f1"].append(val_f1)
+            
+            elapsed_time = time.time() - start_time
+            print(f"Epoch {epoch+1}/{cfg.EPOCHS} | Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f} | Time: {elapsed_time:.1f}s")
+            
+            if val_loss < best_val_loss:
+                fold_model_path = f"{cfg.MODEL_SAVE_PATH.rsplit('.', 1)[0]}_fold{fold+1}.pth"
+                torch.save(model.state_dict(), fold_model_path)
+                best_val_loss = val_loss
+                epochs_no_improve = 0
+                print(f"Model for fold {fold+1} saved. Validation loss improved to {best_val_loss:.4f}")
+            else:
+                epochs_no_improve += 1
+                if epochs_no_improve >= cfg.PATIENCE:
+                    print(f"Early stopping at epoch {epoch+1}.")
+                    break
+        
+        all_histories.append(history)
+        fold_metrics.append({
+            'best_val_loss': best_val_loss,
+            'final_val_acc': history['val_acc'][-1],
+            'final_val_f1': history['val_f1'][-1]
+        })
+
+    # =========================================
+    # 5. Final Evaluation and Plotting
+    # =========================================
+    print(f"\n{'='*20} K-FOLD SUMMARY {'='*20}")
+    avg_val_loss = np.mean([m['best_val_loss'] for m in fold_metrics])
+    avg_val_acc = np.mean([m['final_val_acc'] for m in fold_metrics])
+    avg_val_f1 = np.mean([m['final_val_f1'] for m in fold_metrics])
+
+    print(f"Average Best Validation Loss across {N_SPLITS} folds: {avg_val_loss:.4f}")
+    print(f"Average Final Validation Accuracy across {N_SPLITS} folds: {avg_val_acc:.4f}")
+    print(f"Average Final Validation F1-Score across {N_SPLITS} folds: {avg_val_f1:.4f}")
+
+    plotter = KFoldTrainingPlotter(save_path=cfg.PLOT_SAVE_PATH)
+    plotter.plot_and_save(all_histories)
