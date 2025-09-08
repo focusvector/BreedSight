@@ -109,11 +109,10 @@ if __name__ == "__main__":
     all_labels = [label for _, label in all_samples]
 
     # --- Define Transforms ---
+    # Add TrivialAugment for stronger augmentation, ideal for smaller datasets
     train_transform = transforms.Compose([
         transforms.RandomResizedCrop(cfg.IMAGE_SIZE, scale=(0.8, 1.0)),
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomRotation(15),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+        transforms.TrivialAugmentWide(),
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
         transforms.RandomErasing(p=0.5, scale=(0.02, 0.25)),
@@ -163,7 +162,7 @@ if __name__ == "__main__":
 
         # --- Re-initialize Model, Optimizer, etc. for each fold ---
         model = build_model(num_classes, cfg.DEVICE)
-        criterion = nn.CrossEntropyLoss(weight=class_weights)
+        criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=cfg.LABEL_SMOOTHING)
         params_to_update = [p for p in model.parameters() if p.requires_grad]
         optimizer = optim.Adam(params_to_update, lr=cfg.LEARNING_RATE, weight_decay=cfg.WEIGHT_DECAY)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min", patience=3, verbose=True)

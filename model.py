@@ -1,45 +1,29 @@
 import torch.nn as nn
 from torchvision import models
 
-class BreedSightModel(nn.Module):
-    """A custom model using a pre-trained InceptionV3 backbone for fine-tuning."""
-    def __init__(self, num_classes):
-        """Initializes the model architecture."""
-        super().__init__()
-        self.backbone = models.inception_v3(weights=models.Inception_V3_Weights.IMAGENET1K_V1)
-        
-        for param in self.backbone.parameters():
-            param.requires_grad = False
-            
-        for name, child in self.backbone.named_children():
-            if name in ['Mixed_7a', 'Mixed_7b', 'Mixed_7c', 'fc']:
-                for param in child.parameters():
-                    param.requires_grad = True
-
-        num_features = self.backbone.fc.in_features
-        
-        self.backbone.fc = nn.Sequential(
-            nn.Linear(num_features, 1024),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(1024, 512),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(512, num_classes)
-        )
-        
-        if hasattr(self.backbone, 'AuxLogits'):
-            self.backbone.AuxLogits = nn.Identity()
-
-    def forward(self, x):
-        """Defines the forward pass of the model."""
-        if self.training:
-            outputs, _ = self.backbone(x)
-            return outputs
-        else:
-            return self.backbone(x)
-
 def build_model(num_classes, device):
-    """A helper function to create the model and move it to the correct device."""
-    model = BreedSightModel(num_classes=num_classes)
+    """
+    Builds an EfficientNet-B0 model with a custom classifier head.
+    This model is lighter and often performs better on smaller datasets than InceptionV3.
+    """
+    # 1. Load pre-trained EfficientNet-B0
+    model = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.IMAGENET1K_V1)
+
+    # 2. Freeze all backbone parameters
+    for param in model.parameters():
+        param.requires_grad = False
+
+    # 3. Unfreeze the final few blocks for fine-tuning
+    # EfficientNet's blocks are in model.features. Unfreeze last 2-3 blocks.
+    for i in range(6, 8): # Unfreezing features[6] and features[7]
+        for param in model.features[i].parameters():
+            param.requires_grad = True
+
+    # 4. Replace the classifier head
+    num_features = model.classifier[1].in_features
+    model.classifier = nn.Sequential(
+        nn.Dropout(p=0.3, inplace=True), # Use a dropout rate suitable for the smaller head
+        nn.Linear(num_features, num_classes)
+    )
+    
     return model.to(device)
