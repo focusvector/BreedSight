@@ -13,9 +13,9 @@ def build_model(num_classes, device):
     for param in model.parameters():
         param.requires_grad = False
 
-    # 3. Unfreeze the final few blocks for fine-tuning
-    # EfficientNet's blocks are in model.features. Unfreeze last 2-3 blocks.
-    for i in range(6, 8): # Unfreezing features[6] and features[7]
+    # 3. Unfreeze more layers for deeper fine-tuning
+    # Unfreezing from block 4 onwards to give the model more capacity to adapt.
+    for i in range(4, 8): # Unfreezing features[4] through features[7]
         for param in model.features[i].parameters():
             param.requires_grad = True
 

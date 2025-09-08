@@ -17,7 +17,7 @@ class Config:
     IMAGE_SIZE = 224  # EfficientNet-B0 uses 224x224
     EPOCHS = 50
     PATIENCE = 7
-    LEARNING_RATE = 0.001
+    LEARNING_RATE = 0.0001
     WEIGHT_DECAY = 1e-4
     LABEL_SMOOTHING = 0.1 # Helps prevent overfitting on noisy datasets
     
