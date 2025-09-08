@@ -260,7 +260,8 @@ class FusedDataset(Dataset):
 				image = Image.open(image_path).convert("RGB") # Open the image from the path and convert to RGB.
 			except Exception as e: # If an error occurs.
 				print(f"⚠️ Warning: Could not load image {image_path}. Error: {e}. Skipping.") # Print a warning.
-				return self.__getitem__((idx + 1) % len(self)) # Skip the bad sample by recursively calling __getitem__ for the next sample.
+				# Return None. This will be filtered out by a custom collate_fn in the DataLoader.
+				return None
 
 		# Apply the transformations if they are defined.
 		if self.transform: # Check if a transform pipeline was provided.

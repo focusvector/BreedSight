@@ -34,6 +34,3 @@ class Config:
     # Set to True to attempt to load the entire dataset into RAM for faster training.
     PRELOAD_DATASET_INTO_RAM = False
     MEMORY_SAFETY_MARGIN = 0.75 # Use 75% of available RAM at most for pre-loading.
-    LOADING_MODE = "CHUNKED" 
-    CHUNK_SIZE = 8000 # Number of images to load into RAM at a time if using CHUNKED mode.
-    MEMORY_SAFETY_MARGIN = 0.75 # Use 75% of available RAM at most for pre-loading.
