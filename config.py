@@ -9,7 +9,7 @@ class Config:
         r"D:\dev\sih\datasets\img 6k"
     ]
     CLASS_SELECTION_MODE = "TOP_N" 
-    TOP_N_CLASSES = 20
+    TOP_N_CLASSES = 30
     SPECIFIC_CLASSES = ["Gir", "Sahiwal", "Jersey"]
     
     # --- Training Hyperparameters ---
@@ -17,8 +17,18 @@ class Config:
     IMAGE_SIZE = 299  # InceptionV3 requires 299x299
     EPOCHS = 50
     PATIENCE = 7
-    LEARNING_RATE = 0.0001
-    WEIGHT_DECAY = 5e-4  # Increased weight decay for stronger regularization
+    LEARNING_RATE = 0.0003
+    WEIGHT_DECAY = 2e-4  # Increased weight decay for stronger regularization
+
+    # --- Staged Fine-tuning ---
+    HEAD_LR = 1e-3
+    FINETUNE_LR = 4e-4
+    UNFREEZE_EPOCH = 4
+    UNFREEZE_LAYERS = [
+        'Mixed_5d','Mixed_5e',
+        'Mixed_6a','Mixed_6b','Mixed_6c','Mixed_6d','Mixed_6e',
+        'Mixed_7a','Mixed_7b','Mixed_7c'
+    ]
     
     # --- File Paths ---
     MODEL_SAVE_PATH = "final_inception_model.pth"
@@ -34,3 +44,21 @@ class Config:
     # Set to True to attempt to load the entire dataset into RAM for faster training.
     PRELOAD_DATASET_INTO_RAM = False
     MEMORY_SAFETY_MARGIN = 0.75 # Use 75% of available RAM at most for pre-loading.
+
+    # --- Dynamic regularization knobs (can be modified during training) ---
+    DROPOUT_RATE = 0.3
+    RANDOM_ERASE_P = 0.0  # start disabled in minimal pipeline
+    MIXUP_PROB = 0.0
+    MIXUP_ALPHA = 0.2
+
+    # --- Dynamic regularization defaults ---
+    DROPOUT_RATE = 0.4
+    RANDOM_ERASE_P = 0.2
+    MIXUP_PROB = 0.2
+    MIXUP_ALPHA = 0.2
+
+    # --- Scheduler ---
+    WARMUP_EPOCHS = 5
+
+    # --- Training options ---
+    USE_CLASS_WEIGHTS = False

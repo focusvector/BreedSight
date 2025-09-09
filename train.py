@@ -69,12 +69,92 @@ def prepare_all_samples(cfg):
     return all_samples, unified_class_map
 
 # =========================================
+# 2.b Playbook: staged fine-tuning adjustments
+# =========================================
+def adjust_training(cfg, model, optimizer, scheduler, epoch, val_loss_history):
+    """Adjust training per playbook based on epoch and plateau.
+    Returns possibly-updated (model, optimizer, scheduler) and a message string if changed.
+    """
+    change_msgs = []
+
+    # Phase switch at UNFREEZE_EPOCH (1-based)
+    if epoch == (cfg.UNFREEZE_EPOCH - 1):
+        # Unfreeze deeper blocks
+        for name, child in model.backbone.named_children():
+            if name in cfg.UNFREEZE_LAYERS:
+                for p in child.parameters():
+                    p.requires_grad = True
+        params_to_update = [p for p in model.parameters() if p.requires_grad]
+        optimizer = optim.AdamW(params_to_update, lr=cfg.FINETUNE_LR, weight_decay=cfg.WEIGHT_DECAY)
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=(cfg.EPOCHS - epoch), eta_min=1e-6)
+        change_msgs.append(f"[Adjust] Epoch {epoch+1}: Unfroze {cfg.UNFREEZE_LAYERS}; LR -> {cfg.FINETUNE_LR}")
+
+    # Plateau detection over 5 epochs: compare last 5 vs best before
+    plateau_5 = False
+    plateau_10 = False
+    plateau_15 = False
+    n = len(val_loss_history)
+    if n >= 6:
+        recent5 = val_loss_history[-5:]
+        best_before = min(val_loss_history[:-5]) if n > 5 else float('inf')
+        if min(recent5) >= best_before:
+            plateau_5 = True
+    if n >= 11:
+        recent10 = val_loss_history[-10:]
+        best_before10 = min(val_loss_history[:-10]) if n > 10 else float('inf')
+        if min(recent10) >= best_before10:
+            plateau_10 = True
+    if n >= 16:
+        recent15 = val_loss_history[-15:]
+        best_before15 = min(val_loss_history[:-15]) if n > 15 else float('inf')
+        if min(recent15) >= best_before15:
+            plateau_15 = True
+
+    # a) If plateau >=5 epochs: lower LR to 1e-4
+    if plateau_5:
+        for g in optimizer.param_groups:
+            if g['lr'] > 1e-4:
+                g['lr'] = 1e-4
+                change_msgs.append(f"[Adjust] Epoch {epoch+1}: Plateau detected; LR -> 1e-4")
+
+    # b) If plateau >=10: stronger regularization
+    if plateau_10:
+        if getattr(cfg, 'DROPOUT_RATE', 0.3) < 0.4:
+            cfg.DROPOUT_RATE = 0.4
+            change_msgs.append(f"[Adjust] Epoch {epoch+1}: Dropout -> 0.4")
+        if getattr(cfg, 'RANDOM_ERASE_P', 0.0) < 0.2:
+            cfg.RANDOM_ERASE_P = 0.2
+            change_msgs.append(f"[Adjust] Epoch {epoch+1}: RandomErasing p -> 0.2")
+        if getattr(cfg, 'MIXUP_PROB', 0.0) < 0.1:
+            cfg.MIXUP_PROB = 0.1
+            change_msgs.append(f"[Adjust] Epoch {epoch+1}: MixUp prob -> 0.1 (alpha={cfg.MIXUP_ALPHA})")
+
+    # c) If plateau >=15: unfreeze Mixed_5d/e and set LR=5e-5
+    if plateau_15:
+        for name, child in model.backbone.named_children():
+            if name in ["Mixed_5d", "Mixed_5e"]:
+                for p in child.parameters():
+                    p.requires_grad = True
+        params_to_update = [p for p in model.parameters() if p.requires_grad]
+        optimizer = optim.AdamW(params_to_update, lr=5e-5, weight_decay=cfg.WEIGHT_DECAY)
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=(cfg.EPOCHS - epoch), eta_min=1e-6)
+        change_msgs.append(f"[Adjust] Epoch {epoch+1}: Unfroze Mixed_5d/e; LR -> 5e-5")
+
+    return model, optimizer, scheduler, change_msgs
+
+# =========================================
 # 3. Main Execution Block
 # =========================================
 if __name__ == "__main__":
     cfg = Config()
     set_seed(42) # Set a fixed random seed for reproducibility
     
+    # Enable anti-overfitting and fine-tuning from the start
+    cfg.DROPOUT_RATE = 0.4
+    cfg.RANDOM_ERASE_P = 0.2
+    cfg.MIXUP_PROB = 0.1
+    cfg.MIXUP_ALPHA = getattr(cfg, 'MIXUP_ALPHA', 0.2)
+
     # --- Checkpoint Setup ---
     CHECKPOINT_PATH = "training_checkpoint.pth"
     start_fold = 0
@@ -109,17 +189,17 @@ if __name__ == "__main__":
     all_labels = [label for _, label in all_samples]
 
     # --- Define Transforms ---
-    # Add TrivialAugment for stronger augmentation, ideal for smaller datasets
     train_transform = transforms.Compose([
-        transforms.RandomResizedCrop(cfg.IMAGE_SIZE, scale=(0.8, 1.0)),
-        transforms.ColorJitter(0.2,0.2,0.2,0.05),
-        transforms.RandomHorizontalFlip(0.5),
+        transforms.Resize((cfg.IMAGE_SIZE, cfg.IMAGE_SIZE)),
+        transforms.CenterCrop(cfg.IMAGE_SIZE),
+        transforms.RandomHorizontalFlip(p=0.5),
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-        transforms.RandomErasing(p=0.1, scale=(0.02, 0.25)),
+        transforms.RandomErasing(p=getattr(cfg, 'RANDOM_ERASE_P', 0.0), value='random', inplace=False),
     ])
     val_transform = transforms.Compose([
         transforms.Resize((cfg.IMAGE_SIZE, cfg.IMAGE_SIZE)),
+        transforms.CenterCrop(cfg.IMAGE_SIZE),
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
     ])
@@ -156,29 +236,53 @@ if __name__ == "__main__":
         label_counts = Counter([label for _, label in train_samples])
         total_samples = len(train_samples)
         class_weights = torch.zeros(num_classes)
-        class_weights = torch.clamp(class_weights, min=0.1, max=10.0)
 
         for i in range(num_classes):
             count = label_counts.get(i, 0)
             class_weights[i] = total_samples / (num_classes * count) if count > 0 else 1.0
+        class_weights = torch.clamp(class_weights, min=0.1, max=10.0)
+        # normalize to mean 1.0 to stabilize CE loss scale
+        class_weights = class_weights / class_weights.mean()
         class_weights = class_weights.to(cfg.DEVICE)
+        print(f"Class weights: {class_weights}")
 
         # --- Re-initialize Model, Optimizer, etc. for each fold ---
         model = build_model(num_classes, cfg.DEVICE)
-        criterion = nn.CrossEntropyLoss(weight=class_weights)
+        
+        # Unfreeze deeper Inception blocks from the start (Mixed_5d/e and Mixed_6a..Mixed_7c)
+        for name, child in model.backbone.named_children():
+            if name in cfg.UNFREEZE_LAYERS:
+                for p in child.parameters():
+                    p.requires_grad = True
+        
+        # Apply initial dropout rate across model
+        for mod in model.modules():
+            if isinstance(mod, nn.Dropout):
+                mod.p = cfg.DROPOUT_RATE
+        
+        # Loss: optionally disable class weights, no label smoothing to pair with MixUp
+        use_weights = getattr(cfg, 'USE_CLASS_WEIGHTS', True)
+        criterion = nn.CrossEntropyLoss(weight=(class_weights if use_weights else None), label_smoothing=0.0)
+        
+        # Optimizer: fine-tune from the start using FINETUNE_LR
         params_to_update = [p for p in model.parameters() if p.requires_grad]
-        optimizer = optim.Adam(params_to_update, lr=cfg.LEARNING_RATE, weight_decay=cfg.WEIGHT_DECAY)
-        # Reinitialize scheduler with more aggressive ReduceLROnPlateau settings
-        # factor=0.5 halves the LR on plateau, threshold=1e-3 requires 0.001 improvement,
-        # patience=2 triggers quicker LR reductions when progress stalls.
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer,
-            mode="min",
-            factor=0.5,
-            patience=2,
-            threshold=1e-3,
-            verbose=True
-        )
+        optimizer = optim.AdamW(params_to_update, lr=cfg.FINETUNE_LR, weight_decay=cfg.WEIGHT_DECAY)
+        
+        # Scheduler: warmup then cosine
+        warmup_epochs = getattr(cfg, 'WARMUP_EPOCHS', 0)
+        if warmup_epochs and warmup_epochs > 0:
+            warmup = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda ep: min((ep + 1) / warmup_epochs, 1.0))
+            cosine = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(cfg.EPOCHS - warmup_epochs, 1), eta_min=1e-6)
+            scheduler = optim.lr_scheduler.SequentialLR(optimizer, schedulers=[warmup, cosine], milestones=[warmup_epochs])
+        else:
+            scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.EPOCHS, eta_min=1e-6)
+        
+        # Diagnostics: print trainable parameter groups
+        trainable = [(n, p.numel()) for n, p in model.named_parameters() if p.requires_grad]
+        print("Trainable layers and param counts:")
+        for n, cnt in trainable:
+            print(n, cnt)
+        print("Total trainable params:", sum(cnt for _, cnt in trainable))
         scaler = torch.amp.GradScaler(enabled=torch.cuda.is_available())
         
         # --- Fold-specific Training History ---
@@ -190,8 +294,21 @@ if __name__ == "__main__":
         if fold == start_fold and start_epoch > 0:
             print(f"Loading model and optimizer state for fold {fold+1} from epoch {start_epoch}")
             model.load_state_dict(checkpoint['model_state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            # Ensure unfreezing from the start (keep consistent with current policy)
+            for name, child in model.backbone.named_children():
+                if name in cfg.UNFREEZE_LAYERS:
+                    for p in child.parameters():
+                        p.requires_grad = True
+            params_to_update = [p for p in model.parameters() if p.requires_grad]
+            optimizer = optim.AdamW(params_to_update, lr=cfg.FINETUNE_LR, weight_decay=cfg.WEIGHT_DECAY)
+            # Rebuild warmup+cosine scheduler with offset
+            warmup_epochs = getattr(cfg, 'WARMUP_EPOCHS', 0)
+            if warmup_epochs and warmup_epochs > 0:
+                warmup = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda ep: min((ep + 1) / warmup_epochs, 1.0))
+                cosine = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(cfg.EPOCHS - warmup_epochs, 1), eta_min=1e-6)
+                scheduler = optim.lr_scheduler.SequentialLR(optimizer, schedulers=[warmup, cosine], milestones=[warmup_epochs], last_epoch=start_epoch-1)
+            else:
+                scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.EPOCHS, eta_min=1e-6, last_epoch=start_epoch-1)
             scaler.load_state_dict(checkpoint['scaler_state_dict'])
             best_val_loss = checkpoint['best_val_loss']
             epochs_no_improve = checkpoint['epochs_no_improve']
@@ -200,11 +317,26 @@ if __name__ == "__main__":
         # --- Inner Training Loop for the current fold ---
         for epoch in range(start_epoch, cfg.EPOCHS):
             start_time = time.time()
-            
-            train_loss, train_acc = train_one_epoch(model, train_loader, optimizer, criterion, scaler, cfg.DEVICE)
+            # Start with fixed settings; ensure current dropout/erasing settings are applied
+            target_drop = getattr(cfg, 'DROPOUT_RATE', 0.4)
+            for mod in model.modules():
+                if isinstance(mod, nn.Dropout) and abs(mod.p - target_drop) > 1e-6:
+                    mod.p = target_drop
+            if hasattr(train_dataset, 'transform') and isinstance(train_dataset.transform, transforms.Compose):
+                for t in getattr(train_dataset.transform, 'transforms', []):
+                    if isinstance(t, transforms.RandomErasing) and abs(t.p - getattr(cfg, 'RANDOM_ERASE_P', 0.2)) > 1e-6:
+                        t.p = cfg.RANDOM_ERASE_P
+
+            # Report current LR
+            current_lr = optimizer.param_groups[0]['lr'] if optimizer.param_groups else 0.0
+
+            train_loss, train_acc = train_one_epoch(
+                model, train_loader, optimizer, criterion, scaler, cfg.DEVICE,
+                mixup_prob=getattr(cfg, 'MIXUP_PROB', 0.2), mixup_alpha=getattr(cfg, 'MIXUP_ALPHA', 0.2)
+            )
             val_loss, val_acc, val_precision, val_recall, val_f1, cm = validate(model, val_loader, criterion, cfg.DEVICE)
             
-            scheduler.step(val_loss)
+            scheduler.step()
 
             history["train_loss"].append(train_loss)
             history["train_acc"].append(train_acc)
@@ -215,7 +347,7 @@ if __name__ == "__main__":
             history["val_f1"].append(val_f1)
             
             elapsed_time = time.time() - start_time
-            print(f"Epoch {epoch+1}/{cfg.EPOCHS} | Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f} | Time: {elapsed_time:.1f}s")
+            print(f"Epoch {epoch+1}/{cfg.EPOCHS} | LR: {current_lr:.2e} | Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f} | Time: {elapsed_time:.1f}s")
             
             if val_loss < best_val_loss:
                 fold_model_path = f"{cfg.MODEL_SAVE_PATH.rsplit('.', 1)[0]}_fold{fold+1}.pth"

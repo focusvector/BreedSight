@@ -12,24 +12,19 @@ class BreedSightModel(nn.Module):
         for param in self.backbone.parameters():
             param.requires_grad = False
             
-        # 2. Unfreeze more layers for deeper fine-tuning.
-        # Unfreezing from Mixed_6a onwards.
-        layers_to_unfreeze = ['Mixed_6a', 'Mixed_6b', 'Mixed_6c', 'Mixed_6d', 'Mixed_6e', 
-                              'AuxLogits', 'Mixed_7a', 'Mixed_7b', 'Mixed_7c', 'fc']
-        for name, child in self.backbone.named_children():
-            if name in layers_to_unfreeze:
-                for param in child.parameters():
-                    param.requires_grad = True
+        # Only unfreeze classifier
+        for param in self.backbone.fc.parameters():
+            param.requires_grad = True
 
         # 3. Replace the final classifier
         num_features = self.backbone.fc.in_features
         self.backbone.fc = nn.Sequential(
             nn.Linear(num_features, 1024),
             nn.ReLU(),
-            nn.Dropout(0.5),
+            nn.Dropout(0.4),
             nn.Linear(1024, 512),
             nn.ReLU(),
-            nn.Dropout(0.5),  # Increased dropout for stronger regularization
+            nn.Dropout(0.4),
             nn.Linear(512, num_classes)
         )
         
@@ -39,12 +34,10 @@ class BreedSightModel(nn.Module):
 
     def forward(self, x):
         """Defines the forward pass of the model."""
-        # InceptionV3 has a different output structure during training
-        if self.training:
-            outputs, _ = self.backbone(x)
-            return outputs
-        else:
-            return self.backbone(x)
+        out = self.backbone(x)
+        if hasattr(out, 'logits'):
+            return out.logits
+        return out
 
 def build_model(num_classes, device):
     """A helper function to create the model and move it to the correct device."""
