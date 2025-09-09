@@ -18,7 +18,7 @@ class Config:
     EPOCHS = 50
     PATIENCE = 7
     LEARNING_RATE = 0.0001
-    WEIGHT_DECAY = 1e-4
+    WEIGHT_DECAY = 5e-4  # Increased weight decay for stronger regularization
     
     # --- File Paths ---
     MODEL_SAVE_PATH = "final_inception_model.pth"

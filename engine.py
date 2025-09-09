@@ -1,13 +1,64 @@
 import torch
 from tqdm import tqdm
 import numpy as np
-from sklearn.metrics import precision_score, recall_score, f1_score
+from sklearn.metrics import precision_score, recall_score, f1_score, confusion_matrix
+
+def rand_bbox(size, lam):
+    """Generate random bbox for CutMix.
+    size: tensor shape (B, C, H, W)
+    returns x1, y1, x2, y2 (ints)
+    """
+    _, _, H, W = size
+    cut_rat = np.sqrt(1. - lam)
+    cut_w = int(W * cut_rat)
+    cut_h = int(H * cut_rat)
+
+    # uniform center
+    cx = np.random.randint(W)
+    cy = np.random.randint(H)
+
+    x1 = np.clip(cx - cut_w // 2, 0, W)
+    y1 = np.clip(cy - cut_h // 2, 0, H)
+    x2 = np.clip(cx + cut_w // 2, 0, W)
+    y2 = np.clip(cy + cut_h // 2, 0, H)
+
+    return x1, y1, x2, y2
+
+
+def cutmix_data(x, y, device, alpha=1.0):
+    """Apply CutMix on a batch and return mixed inputs and labels.
+    Returns: mixed_x, y_a, y_b, lam
+    """
+    if alpha > 0:
+        lam = np.random.beta(alpha, alpha)
+    else:
+        lam = 1.0
+
+    lam = float(np.clip(lam, 0.0, 1.0))
+    batch_size = x.size(0)
+    index = torch.randperm(batch_size).to(device)
+
+    x2 = x.clone()
+    bbx1, bby1, bbx2, bby2 = rand_bbox(x.size(), lam)
+    # Note: slicing order is [N, C, H, W]
+    x2[:, :, bby1:bby2, bbx1:bbx2] = x[index, :, bby1:bby2, bbx1:bbx2]
+
+    # adjust lambda to exactly match pixel ratio
+    area = (bbx2 - bbx1) * (bby2 - bby1)
+    lam = 1.0 - area / float(x.size(2) * x.size(3))
+
+    y_a, y_b = y, y[index]
+    return x2, y_a, y_b, lam
+
+
+def mix_criterion(criterion, pred, y_a, y_b, lam):
+    """Compute loss for mixed labels."""
+    return lam * criterion(pred, y_a) + (1. - lam) * criterion(pred, y_b)
 
 def train_one_epoch(model, loader, optimizer, criterion, scaler, device):
     """
     Runs a single training epoch, calculating loss and accuracy.
-    This version uses a standard training loop without Mixup or Cutmix
-    to avoid conflicts with TrivialAugment.
+    This version optionally applies CutMix augmentation to a portion of batches.
     """
     model.train()
     running_loss = 0.0
@@ -23,15 +74,21 @@ def train_one_epoch(model, loader, optimizer, criterion, scaler, device):
         inputs, labels = inputs.to(device, non_blocking=True), labels.to(device, non_blocking=True)
         optimizer.zero_grad()
         
-        # Standard training step
+        # decide whether to apply CutMix for this batch
+        do_cutmix = np.random.rand() < CUTMIX_PROB
+        
         with torch.amp.autocast(device_type="cuda", enabled=torch.cuda.is_available()):
-            outputs = model(inputs)
-            loss = criterion(outputs, labels)
-            
-            # Calculate accuracy for every batch
-            _, preds = torch.max(outputs, 1)
-            total_corrects += torch.sum(preds == labels).item()
-            total_samples += inputs.size(0)
+            if do_cutmix:
+                mixed_inputs, y_a, y_b, lam = cutmix_data(inputs, labels, device, alpha=CUTMIX_ALPHA)
+                outputs = model(mixed_inputs)
+                loss = mix_criterion(criterion, outputs, y_a, y_b, lam)
+                # do not count accuracy for mixed labels
+            else:
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
+                _, preds = torch.max(outputs, 1)
+                total_corrects += torch.sum(preds == labels).item()
+                total_samples += inputs.size(0)
 
         scaler.scale(loss).backward()
         scaler.step(optimizer)
@@ -77,7 +134,7 @@ def validate(model, loader, criterion, device):
     
     # Ensure there's something to calculate metrics on
     if not all_labels or not all_preds:
-        return avg_loss, 0.0, 0.0, 0.0, 0.0
+        return avg_loss, 0.0, 0.0, 0.0, 0.0, None
 
     accuracy = np.mean(np.array(all_preds) == np.array(all_labels))
     
@@ -85,5 +142,11 @@ def validate(model, loader, criterion, device):
     precision = precision_score(all_labels, all_preds, average='macro', zero_division=0)
     recall = recall_score(all_labels, all_preds, average='macro', zero_division=0)
     f1 = f1_score(all_labels, all_preds, average='macro', zero_division=0)
+
+    # compute confusion matrix
+    cm = confusion_matrix(all_labels, all_preds)
     
-    return avg_loss, accuracy, precision, recall, f1
+    return avg_loss, accuracy, precision, recall, f1, cm
+
+CUTMIX_PROB = 0.5
+CUTMIX_ALPHA = 1.0

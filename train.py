@@ -2,7 +2,7 @@
 # 0. Imports
 # =========================================
 import json # Imports the JSON module for working with JSON files (e.g., saving the class map).
-import os # Imports the OS module for interacting with the operating system (not directly used here but good practice).
+import os # Imports the OS m                        cm_save_path = f"{cfg.MODEL_SAVE_PATH.rsplit('.', 1)[0]}_fold{fold+1}_confusion.png"dule for interacting with the operating system (not directly used here but good practice).
 import pathlib # Imports the pathlib module for an object-oriented way to handle filesystem paths.
 import random # Imports the random module for generating random numbers (used for augmentations).
 import time # Imports the time module for timing operations like epoch duration.
@@ -112,10 +112,11 @@ if __name__ == "__main__":
     # Add TrivialAugment for stronger augmentation, ideal for smaller datasets
     train_transform = transforms.Compose([
         transforms.RandomResizedCrop(cfg.IMAGE_SIZE, scale=(0.8, 1.0)),
-        transforms.TrivialAugmentWide(),
+        transforms.ColorJitter(0.2,0.2,0.2,0.05),
+        transforms.RandomHorizontalFlip(0.5),
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-        transforms.RandomErasing(p=0.5, scale=(0.02, 0.25)),
+        transforms.RandomErasing(p=0.1, scale=(0.02, 0.25)),
     ])
     val_transform = transforms.Compose([
         transforms.Resize((cfg.IMAGE_SIZE, cfg.IMAGE_SIZE)),
@@ -155,6 +156,8 @@ if __name__ == "__main__":
         label_counts = Counter([label for _, label in train_samples])
         total_samples = len(train_samples)
         class_weights = torch.zeros(num_classes)
+        class_weights = torch.clamp(class_weights, min=0.1, max=10.0)
+
         for i in range(num_classes):
             count = label_counts.get(i, 0)
             class_weights[i] = total_samples / (num_classes * count) if count > 0 else 1.0
@@ -165,7 +168,17 @@ if __name__ == "__main__":
         criterion = nn.CrossEntropyLoss(weight=class_weights)
         params_to_update = [p for p in model.parameters() if p.requires_grad]
         optimizer = optim.Adam(params_to_update, lr=cfg.LEARNING_RATE, weight_decay=cfg.WEIGHT_DECAY)
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min", patience=3, verbose=True)
+        # Reinitialize scheduler with more aggressive ReduceLROnPlateau settings
+        # factor=0.5 halves the LR on plateau, threshold=1e-3 requires 0.001 improvement,
+        # patience=2 triggers quicker LR reductions when progress stalls.
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode="min",
+            factor=0.5,
+            patience=2,
+            threshold=1e-3,
+            verbose=True
+        )
         scaler = torch.amp.GradScaler(enabled=torch.cuda.is_available())
         
         # --- Fold-specific Training History ---
@@ -189,7 +202,7 @@ if __name__ == "__main__":
             start_time = time.time()
             
             train_loss, train_acc = train_one_epoch(model, train_loader, optimizer, criterion, scaler, cfg.DEVICE)
-            val_loss, val_acc, val_precision, val_recall, val_f1 = validate(model, val_loader, criterion, cfg.DEVICE)
+            val_loss, val_acc, val_precision, val_recall, val_f1, cm = validate(model, val_loader, criterion, cfg.DEVICE)
             
             scheduler.step(val_loss)
 
@@ -210,6 +223,16 @@ if __name__ == "__main__":
                 best_val_loss = val_loss
                 epochs_no_improve = 0
                 print(f"Model for fold {fold+1} saved. Validation loss improved to {best_val_loss:.4f}")
+
+                # save confusion matrix heatmap for this fold if available
+                try:
+                    # 'cm' should be available from validate return
+                    cm_save_path = f"{cfg.MODEL_SAVE_PATH.rsplit('.', 1)[0]}_fold{fold+1}_confusion.png"
+                    class_names = [k for k,v in sorted(unified_class_map.items(), key=lambda item: item[1])]
+                    plotter = KFoldTrainingPlotter(save_path=cfg.PLOT_SAVE_PATH)
+                    plotter.save_confusion_matrix(cm, class_names, cm_save_path)
+                except Exception as e:
+                    print(f"⚠️ Warning: Could not save confusion matrix for fold {fold+1}. Error: {e}")
 
                 # --- Save Checkpoint ---
                 # We save the history for the current fold before it's appended to all_histories
